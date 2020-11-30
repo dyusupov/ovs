@@ -296,8 +296,10 @@ ovsdb_table_create(struct ovsdb_table_schema *ts)
     table->schema = ts;
     table->txn_table = NULL;
     table->indexes = xmalloc(ts->n_indexes * sizeof *table->indexes);
+    table->primary_keys = xmalloc(ts->n_indexes * sizeof *table->primary_keys);
     for (i = 0; i < ts->n_indexes; i++) {
         hmap_init(&table->indexes[i]);
+        hmap_init(&table->primary_keys[i]);
     }
     hmap_init(&table->rows);
 
@@ -317,12 +319,55 @@ ovsdb_table_destroy(struct ovsdb_table *table)
         hmap_destroy(&table->rows);
 
         for (i = 0; i < table->schema->n_indexes; i++) {
+            hmap_destroy(&table->primary_keys[i]);
             hmap_destroy(&table->indexes[i]);
         }
         free(table->indexes);
 
         ovsdb_table_schema_destroy(table->schema);
         free(table);
+    }
+}
+
+void
+ovsdb_table_row_insert(struct ovsdb_table *table,
+    struct ovsdb_row *row, uint32_t row_hash)
+{
+    hmap_insert(&table->rows, &row->hmap_node, row_hash);
+
+    for (size_t i = 0; i < table->schema->n_indexes; i++) {
+        const struct ovsdb_column_set *index = &table->schema->indexes[i];
+
+        uint32_t index_hash = ovsdb_row_hash_columns(row, index, 0);
+        struct ovsdb_pk_node *pk = xmalloc(sizeof *pk);
+        pk->row_hash = row_hash;
+        hmap_insert(&table->primary_keys[i], &pk->node, index_hash);
+    }
+}
+
+void
+ovsdb_table_row_remove(struct ovsdb_table *table,
+    struct ovsdb_row *row)
+{
+    uint32_t hash = ovsdb_row_hash(row);
+
+    hmap_remove(&table->rows, &row->hmap_node);
+
+    for (size_t i = 0; i < table->schema->n_indexes; i++) {
+        const struct ovsdb_column_set *index = &table->schema->indexes[i];
+
+        uint32_t index_hash = ovsdb_row_hash_columns(row, index, 0);
+        struct ovsdb_pk_node *pk;
+        HMAP_FOR_EACH_WITH_HASH (pk, node, index_hash, &table->primary_keys[i]) {
+            if (pk->row_hash == hash)
+                break;
+        }
+        if (!pk) {
+            ovsdb_error_assert(OVSDB_BUG("corrupted primary key on delete"));
+            return;
+        }
+        hmap_remove(&table->primary_keys[i], &pk->node);
+        free(pk);
     }
 }
 

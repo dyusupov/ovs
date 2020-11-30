@@ -144,10 +144,10 @@ ovsdb_txn_row_abort(struct ovsdb_txn *txn OVS_UNUSED,
     ovsdb_txn_row_prefree(txn_row);
     if (!old) {
         if (new) {
-            hmap_remove(&new->table->rows, &new->hmap_node);
+            ovsdb_table_row_remove(new->table, new);
         }
     } else if (!new) {
-        hmap_insert(&old->table->rows, &old->hmap_node, ovsdb_row_hash(old));
+        ovsdb_table_row_insert(old->table, old, ovsdb_row_hash(old));
     } else {
         hmap_replace(&new->table->rows, &new->hmap_node, &old->hmap_node);
     }
@@ -377,7 +377,7 @@ delete_garbage_row(struct ovsdb_txn *txn, struct ovsdb_txn_row *txn_row)
 
     row = txn_row->new;
     txn_row->new = NULL;
-    hmap_remove(&txn_row->table->rows, &row->hmap_node);
+    ovsdb_table_row_remove(txn_row->table, row);
     SHASH_FOR_EACH (node, &txn_row->table->schema->columns) {
         const struct ovsdb_column *column = node->data;
         const struct ovsdb_datum *field = &row->fields[column->index];
@@ -1259,7 +1259,7 @@ ovsdb_txn_row_insert(struct ovsdb_txn *txn, struct ovsdb_row *row)
     uuid_generate(ovsdb_row_get_version_rw(row));
 
     ovsdb_txn_row_create(txn, table, NULL, row);
-    hmap_insert(&table->rows, &row->hmap_node, hash);
+    ovsdb_table_row_insert(table, row, hash);
 }
 
 /* 'row' must be assumed destroyed upon return; the caller must not reference
@@ -1271,7 +1271,7 @@ ovsdb_txn_row_delete(struct ovsdb_txn *txn, const struct ovsdb_row *row_)
     struct ovsdb_table *table = row->table;
     struct ovsdb_txn_row *txn_row = row->txn_row;
 
-    hmap_remove(&table->rows, &row->hmap_node);
+    ovsdb_table_row_remove(table, row);
 
     if (!txn_row) {
         ovsdb_txn_row_create(txn, table, row, NULL);

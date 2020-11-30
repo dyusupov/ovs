@@ -62,6 +62,10 @@ struct ovsdb_table {
      * ovsdb_row"s.  Each of the hmap_nodes in indexes[i] are at index 'i' at
      * the end of struct ovsdb_row, following the 'fields' member. */
     struct hmap *indexes;
+
+    /* A corresponding to schema->n_indexes array of primary index lookup
+     * hmaps */
+    struct hmap *primary_keys;
 };
 
 struct ovsdb_table *ovsdb_table_create(struct ovsdb_table_schema *);
@@ -69,5 +73,15 @@ void ovsdb_table_destroy(struct ovsdb_table *);
 
 const struct ovsdb_row *ovsdb_table_get_row(const struct ovsdb_table *,
                                             const struct uuid *);
+struct ovsdb_pk_node {
+    struct hmap_node node;
+    uint32_t row_hash;
+};
+
+void ovsdb_table_row_insert(struct ovsdb_table *table,
+    struct ovsdb_row *row, uint32_t hash);
+
+void ovsdb_table_row_remove(struct ovsdb_table *table,
+    struct ovsdb_row *row);
 
 #endif /* ovsdb/table.h */

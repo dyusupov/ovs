@@ -1207,7 +1207,7 @@ put_row(struct ovsdb_table *table, struct ovsdb_row *row)
 {
     const struct uuid *uuid = ovsdb_row_get_uuid(row);
     if (!ovsdb_table_get_row(table, uuid)) {
-        hmap_insert(&table->rows, &row->hmap_node, uuid_hash(uuid));
+        ovsdb_table_row_insert(table, row, uuid_hash(uuid));
     }
 }
 

@@ -21,32 +21,96 @@
 #include "condition.h"
 #include "row.h"
 #include "table.h"
+#include "coverage.h"
+
+COVERAGE_DEFINE(query_linear);
+COVERAGE_DEFINE(query_uuid);
+COVERAGE_DEFINE(query_primary);
 
 void
 ovsdb_query(struct ovsdb_table *table, const struct ovsdb_condition *cnd,
             bool (*output_row)(const struct ovsdb_row *, void *aux), void *aux)
 {
+    size_t i;
+
     if (cnd->n_clauses > 0
-        && cnd->clauses[0].column->index == OVSDB_COL_UUID
         && cnd->clauses[0].function == OVSDB_F_EQ) {
+
         /* Optimize the case where the query has a clause of the form "uuid ==
          * <some-uuid>", since we have an index on UUID. */
-        const struct ovsdb_row *row;
+        if (cnd->clauses[0].column->index == OVSDB_COL_UUID) {
+            const struct ovsdb_row *row;
 
-        row = ovsdb_table_get_row(table, &cnd->clauses[0].arg.keys[0].uuid);
-        if (row && row->table == table &&
-            ovsdb_condition_match_every_clause(row, cnd)) {
-            output_row(row, aux);
-        }
-    } else {
-        /* Linear scan. */
-        const struct ovsdb_row *row, *next;
-
-        HMAP_FOR_EACH_SAFE (row, next, hmap_node, &table->rows) {
-            if (ovsdb_condition_match_every_clause(row, cnd) &&
-                !output_row(row, aux)) {
-                break;
+            COVERAGE_INC(query_uuid);
+            row = ovsdb_table_get_row(table, &cnd->clauses[0].arg.keys[0].uuid);
+            if (row && row->table == table &&
+                ovsdb_condition_match_every_clause(row, cnd)) {
+                output_row(row, aux);
             }
+            return;
+        }
+
+        /* Optimize case where the query consists of all indexed clauses,
+         * and if so, reduce row set */
+        for (i = 0; i < cnd->n_clauses; i++) {
+            struct ovsdb_clause *clause = &cnd->clauses[i];
+
+            /* a clause has to be OVSDB_F_EQ */
+            if (clause->function != OVSDB_F_EQ)
+                break;
+
+            for (size_t j = 0; j < table->schema->n_indexes; j++) {
+                const struct ovsdb_column_set *index = &table->schema->indexes[j];
+
+                bool can_optimize = true;
+                for (size_t k = 0; k < index->n_columns; k++) {
+                    const struct ovsdb_column *column = index->columns[k];
+
+                    if (column->index != clause->column->index) {
+                        can_optimize = false;
+                        break;
+                    }
+                }
+
+                /* as long as at least one is primary indexed, we can optimize */
+                if (!can_optimize)
+                    continue;
+
+                COVERAGE_INC(query_primary);
+
+                /* find row via a primary key lookup */
+                uint32_t clause_hash = ovsdb_datum_hash(&clause->arg,
+                    &clause->column->type, 0);
+
+                struct ovsdb_pk_node *pk = (struct ovsdb_pk_node *)
+                    hmap_first_with_hash(&table->primary_keys[j], clause_hash);
+                if (!pk) {
+                    /* if primary key not found, we are in the case when row does not
+                     * exist, hence, empty output */
+                    return;
+                }
+
+                struct ovsdb_row *row = (struct ovsdb_row *)hmap_first_with_hash(
+                    &table->rows, pk->row_hash);
+
+                if (row && row->table == table &&
+                    ovsdb_condition_match_every_clause(row, cnd)) {
+                    output_row(row, aux);
+                    return;
+                }
+            }
+        }
+    }
+
+    COVERAGE_INC(query_linear);
+
+    /* Linear scan. */
+    const struct ovsdb_row *row, *next;
+
+    HMAP_FOR_EACH_SAFE (row, next, hmap_node, &table->rows) {
+        if (ovsdb_condition_match_every_clause(row, cnd) &&
+            !output_row(row, aux)) {
+            break;
         }
     }
 }
@@ -81,6 +145,7 @@ ovsdb_query_distinct(struct ovsdb_table *table,
                      const struct ovsdb_column_set *columns,
                      struct ovsdb_row_set *results)
 {
+    // TODO can be optimized
     if (!columns || ovsdb_column_set_contains(columns, OVSDB_COL_UUID)) {
         /* All the result rows are guaranteed to be distinct anyway. */
         ovsdb_query_row_set(table, condition, results);
